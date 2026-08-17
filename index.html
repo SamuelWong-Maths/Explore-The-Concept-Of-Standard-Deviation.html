@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { --ink:#172554; --blue:#2563eb; --orange:#f97316; }
+    * { box-sizing:border-box; }
+    html, body { margin:0; width:100%; height:100%; overflow:hidden; }
+    body { font-family:system-ui, sans-serif; background:#f8fafc; color:#1e293b; }
+    main { height:100vh; max-width:1200px; margin:auto; padding:6px 10px; display:flex; flex-direction:column; gap:7px; }
+    header { flex:none; }
+    h1 { margin:0; color:var(--ink); font-size:19px; line-height:1.2; }
+    header p { margin:2px 0 0; font-size:11px; color:#475569; }
+    #grid { flex:1; min-height:0; display:grid; grid-template-columns:repeat(3, 1fr); grid-template-rows:repeat(2, minmax(0, 1fr)); gap:7px; }
+    .card { min-width:0; min-height:0; display:flex; flex-direction:column; padding:5px; overflow:hidden; border:1px solid #cbd5e1; border-radius:10px; background:#fff; }
+    .card-head { height:15px; flex:none; display:flex; align-items:center; justify-content:space-between; }
+    .card-title { color:var(--ink); font-size:11px; font-weight:700; }
+    .sd-label { color:#475569; font-size:10px; }
+    .plotbox { flex:1; min-height:0; display:grid; place-items:center; overflow:hidden; }
+    canvas { display:block; width:min(100%, 100%); height:auto; max-height:100%; aspect-ratio:1; touch-action:none; user-select:none; -webkit-user-select:none; }
+    .panel { flex:none; border:1px solid #cbd5e1; border-radius:10px; background:#fff; padding:8px 10px; }
+    .row { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+    .rule { height:1px; margin:7px 0; background:#e2e8f0; }
+    .btn { padding:7px 11px; border:1px solid #cbd5e1; border-radius:8px; background:#fff; color:#334155; font-size:13px; font-weight:650; line-height:1; white-space:nowrap; touch-action:manipulation; }
+    .btn.on { color:#3730a3; border-color:#818cf8; background:#e0e7ff; }
+    .reset { margin-left:auto; color:#be123c; border-color:#fecdd3; }
+    label { color:#334155; font-size:13px; font-weight:650; }
+    input { width:60px; margin-left:4px; padding:4px; border:1px solid #cbd5e1; border-radius:6px; font:inherit; }
+    @media (max-width:700px) {
+      main { padding:5px 6px; gap:5px; }
+      h1 { font-size:16px; }
+      header p { font-size:9px; }
+      #grid { gap:4px; }
+      .card { padding:3px; border-radius:7px; }
+      .card-title { font-size:9px; }
+      .sd-label { font-size:8px; }
+      .panel { padding:6px; }
+      .btn { padding:6px 8px; font-size:11px; }
+      label { font-size:11px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Explore the concept of Standard Deviation</h1>
+      <p>Think about the Dispersion of the following graphs. How would you calculate the dispersion of them?</p>
+    </header>
+
+    <section id="grid" aria-label="Six dot plots"></section>
+
+    <section class="panel" aria-label="Controls">
+      <div class="row">
+        <strong class="text-sm text-slate-800">Reveal</strong>
+        <button class="btn" data-toggle="mean">Centre dot</button>
+        <button class="btn" data-toggle="segments">Segments to centre</button>
+        <button class="btn" data-toggle="sd">Standard deviation</button>
+      </div>
+      <div class="rule"></div>
+      <div class="row">
+        <strong class="text-sm text-slate-800">Move all points</strong>
+        <button class="btn" data-move="right">Move right</button>
+        <button class="btn" data-move="left">Move left</button>
+        <button class="btn" data-move="up">Move up</button>
+        <button class="btn" data-move="down">Move down</button>
+      </div>
+      <div class="row mt-2">
+        <strong class="text-sm text-slate-800">Scale</strong>
+        <label>Factor <input id="factor" type="number" min="0.1" step="0.1" value="1.1"></label>
+        <button id="scale" class="btn">Scale from centre</button>
+        <button id="reset" class="btn reset">Reset plots</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const SIZE = 260;
+    const PAD = 20;
+    const DOMAIN = 110;
+    const MOVE_STEP = 5;
+    const $ = (id) => document.getElementById(id);
+
+    const state = { mean:false, segments:false, sd:false };
+    let sets = {};
+    let originals = {};
+    let dragging = null;
+
+    const order = [
+      ['scatter', 'Random scatter'],
+      ['two', 'Two clusters'],
+      ['out', 'Cluster + outliers'],
+      ['circle', 'Circle'],
+      ['star', 'Five-point star'],
+      ['dino', 'Dinosaur']
+    ];
+
+    const copy = (points) => points.map((p) => ({ ...p }));
+
+    const parsePoints = (text) => text.split(';').map((entry) => {
+      const [x, y] = entry.split(',').map(Number);
+      return { x, y };
+    });
+
+    function centre(points) {
+      return {
+        x: points.reduce((sum, p) => sum + p.x, 0) / points.length,
+        y: points.reduce((sum, p) => sum + p.y, 0) / points.length
+      };
+    }
+
+    function radialSD(points, c) {
+      const sumSquares = points.reduce((sum, p) => sum + (p.x - c.x) ** 2 + (p.y - c.y) ** 2, 0);
+      return Math.sqrt(sumSquares / (points.length - 1));
+    }
+
+    function toCanvas(point) {
+      return [
+        PAD + point.x * (SIZE - PAD * 2) / DOMAIN,
+        SIZE - PAD - point.y * (SIZE - PAD * 2) / DOMAIN
+      ];
+    }
+
+    function fromCanvas(point) {
+      return {
+        x: (point.x - PAD) * DOMAIN / (SIZE - PAD * 2),
+        y: (SIZE - PAD - point.y) * DOMAIN / (SIZE - PAD * 2)
+      };
+    }
+
+    function makeCircle() {
+      return Array.from({ length:60 }, (_, i) => {
+        const angle = 2 * Math.PI * i / 60;
+        return { x:55 + 35 * Math.cos(angle), y:55 + 35 * Math.sin(angle) };
+      });
+    }
+
+    function makeCloud(x, y, count, radius) {
+      return Array.from({ length:count }, (_, i) => {
+        const angle = i * 2.4;
+        const distance = radius * Math.sqrt((i + 0.5) / count);
+        return { x:x + distance * Math.cos(angle), y:y + distance * Math.sin(angle) };
+      });
+    }
+
+    function makeScatter() {
+      let seed = 24681357;
+      const random = () => ((seed = seed * 16807 % 2147483647) - 1) / 2147483646;
+      return Array.from({ length:62 }, () => ({ x:10 + 90 * random(), y:10 + 90 * random() }));
+    }
+
+    function makeStar() {
+      const vertices = [[55,101],[66,68],[101,68],[73,48],[84,14],[55,35],[26,14],[37,48],[9,68],[44,68]];
+      const points = [];
+      vertices.forEach((start, index) => {
+        const end = vertices[(index + 1) % vertices.length];
+        for (let i = 0; i < 12; i++) {
+          points.push({
+            x: start[0] + (end[0] - start[0]) * i / 12,
+            y: start[1] + (end[1] - start[1]) * i / 12
+          });
+        }
+      });
+      return points;
+    }
+
+    // Embedded locally from the Datasaurus Dozen / OpenIntro dinosaur dataset.
+    const dinosaur = parsePoints('55.3846,97.1795;51.5385,96.0256;46.1538,94.4872;42.8205,91.4103;40.7692,88.3333;38.7179,84.8718;35.641,79.8718;33.0769,77.5641;28.9744,74.4872;26.1538,71.4103;23.0769,66.4103;22.3077,61.7949;22.3077,57.1795;23.3333,52.9487;25.8974,51.0256;29.4872,51.0256;32.8205,51.0256;35.3846,51.4103;40.2564,51.4103;44.1026,52.9487;46.6667,54.1026;50,55.2564;53.0769,55.641;56.6667,56.0256;59.2308,57.9487;61.2821,62.1795;61.5385,66.4103;61.7949,69.1026;57.4359,55.2564;54.8718,49.8718;52.5641,46.0256;48.2051,38.3333;49.4872,42.1795;51.0256,44.1026;45.3846,36.4103;42.8205,32.5641;38.7179,31.4103;35.1282,30.2564;32.5641,32.1795;30,36.7949;33.5897,41.4103;36.6667,45.641;38.2051,49.1026;29.7436,36.0256;29.7436,32.1795;30,29.1026;32.0513,26.7949;35.8974,25.2564;41.0256,25.2564;44.1026,25.641;47.1795,28.718;49.4872,31.4103;51.5385,34.8718;53.5897,37.5641;55.1282,40.641;56.6667,42.1795;59.2308,44.4872;62.3077,46.0256;64.8718,46.7949;67.9487,47.9487;70.5128,53.718;71.5385,60.641;71.5385,64.4872;69.4872,69.4872;46.9231,79.8718;48.2051,84.1026;50,85.2564;53.0769,85.2564;55.3846,86.0256;56.6667,86.0256;56.1538,82.9487;53.8462,80.641;51.2821,78.718;50,78.718;47.9487,77.5641;29.7436,59.8718;29.7436,62.1795;31.2821,62.5641;57.9487,99.4872;61.7949,99.1026;64.8718,97.5641;68.4615,94.1026;70.7692,91.0256;72.0513,86.4103;73.8462,83.3333;75.1282,79.1026;76.6667,75.2564;77.6923,71.4103;79.7436,66.7949;81.7949,60.2564;83.3333,55.2564;85.1282,51.4103;86.4103,47.5641;87.9487,46.0256;89.4872,42.5641;93.3333,39.8718;95.3846,36.7949;98.2051,33.718;56.6667,40.641;59.2308,38.3333;60.7692,33.718;63.0769,29.1026;64.1026,25.2564;64.359,24.1026;74.359,22.9487;71.2821,22.9487;67.9487,22.1795;65.8974,20.2564;63.0769,19.1026;61.2821,19.1026;58.7179,18.3333;55.1282,18.3333;52.3077,18.3333;49.7436,17.5641;47.4359,16.0256;44.8718,13.718;48.7179,14.8718;51.2821,14.8718;54.1026,14.8718;56.1538,14.1026;52.0513,12.5641;48.7179,11.0256;47.1795,9.8718;46.1538,6.0256;50.5128,9.4872;53.8462,10.2564;57.4359,10.2564;60,10.641;64.1026,10.641;66.9231,10.641;71.2821,10.641;74.359,10.641;78.2051,10.641;67.9487,8.718;68.4615,5.2564;68.2051,2.9487;37.6923,25.7692;39.4872,25.3846;91.2821,41.5385;50,95.7692;47.9487,95;44.1026,92.6923');
+
+    function renderBoard() {
+      $('grid').innerHTML = order.map(([key, name]) => `
+        <article class="card">
+          <div class="card-head">
+            <span class="card-title">${name}</span>
+            <span class="sd-label" id="sd-${key}"></span>
+          </div>
+          <div class="plotbox">
+            <canvas id="plot-${key}" width="260" height="260" aria-label="${name} dot plot"></canvas>
+          </div>
+        </article>
+      `).join('');
+      order.forEach(([key]) => bindCanvas(key));
+      requestAnimationFrame(drawAll);
+    }
+
+    function draw(key) {
+      const canvas = $(`plot-${key}`);
+      const ctx = canvas.getContext('2d');
+      const points = sets[key];
+      const c = centre(points);
+      const centrePoint = toCanvas(c);
+      ctx.clearRect(0, 0, SIZE, SIZE);
+
+      ctx.strokeStyle = '#d9e0ea';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 100; i += 20) {
+        const x = toCanvas({ x:i, y:0 })[0];
+        const y = toCanvas({ x:0, y:i })[1];
+        ctx.beginPath();
+        ctx.moveTo(x, PAD); ctx.lineTo(x, SIZE - PAD);
+        ctx.moveTo(PAD, y); ctx.lineTo(SIZE - PAD, y);
+        ctx.stroke();
+      }
+
+      if (state.segments) {
+        ctx.strokeStyle = '#f59e0b88';
+        points.forEach((point) => {
+          const position = toCanvas(point);
+          ctx.beginPath();
+          ctx.moveTo(...position);
+          ctx.lineTo(...centrePoint);
+          ctx.stroke();
+        });
+      }
+
+      ctx.fillStyle = '#2563eb';
+      points.forEach((point) => {
+        const position = toCanvas(point);
+        ctx.beginPath();
+        ctx.arc(...position, key === 'dino' ? 2.15 : 2.6, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      if (state.mean) {
+        ctx.fillStyle = '#f97316';
+        ctx.beginPath();
+        ctx.arc(...centrePoint, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      $(`sd-${key}`).textContent = state.sd ? `SD ${radialSD(points, c).toFixed(1)}` : '';
+    }
+
+    function drawAll() { order.forEach(([key]) => draw(key)); }
+
+    function bindCanvas(key) {
+      const canvas = $(`plot-${key}`);
+      const eventPosition = (event) => {
+        const rect = canvas.getBoundingClientRect();
+        return { x:(event.clientX - rect.left) * SIZE / rect.width, y:(event.clientY - rect.top) * SIZE / rect.height };
+      };
+
+      canvas.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        const pointer = eventPosition(event);
+        const index = sets[key].findIndex((point) => {
+          const position = toCanvas(point);
+          return Math.hypot(position[0] - pointer.x, position[1] - pointer.y) < 13;
+        });
+        if (index >= 0) {
+          dragging = { key, index };
+          canvas.setPointerCapture(event.pointerId);
+        }
+      });
+
+      canvas.addEventListener('pointermove', (event) => {
+        if (!dragging || dragging.key !== key) return;
+        event.preventDefault();
+        const point = fromCanvas(eventPosition(event));
+        sets[key][dragging.index] = {
+          x: Math.max(0, Math.min(DOMAIN, point.x)),
+          y: Math.max(0, Math.min(DOMAIN, point.y))
+        };
+        draw(key);
+      });
+
+      const stopDragging = (event) => {
+        if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+        dragging = null;
+      };
+      canvas.addEventListener('pointerup', stopDragging);
+      canvas.addEventListener('pointercancel', stopDragging);
+    }
+
+    function setup() {
+      sets = {
+        scatter: makeScatter(),
+        two: [...makeCloud(34, 39, 25, 10), ...makeCloud(76, 72, 25, 10)],
+        out: [...makeCloud(55, 55, 42, 12), ...parsePoints('15,20;17,91;94,88;101,44;84,13;43,101')],
+        circle: makeCircle(),
+        star: makeStar(),
+        dino: copy(dinosaur)
+      };
+      originals = Object.fromEntries(Object.entries(sets).map(([key, points]) => [key, copy(points)]));
+      renderBoard();
+    }
+
+    document.querySelectorAll('[data-toggle]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const feature = button.dataset.toggle;
+        state[feature] = !state[feature];
+        button.classList.toggle('on', state[feature]);
+        drawAll();
+      });
+    });
+
+    document.querySelectorAll('[data-move]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const direction = button.dataset.move;
+        Object.values(sets).forEach((points) => points.forEach((point) => {
+          if (direction === 'right') point.x += MOVE_STEP;
+          if (direction === 'left') point.x -= MOVE_STEP;
+          if (direction === 'up') point.y += MOVE_STEP;
+          if (direction === 'down') point.y -= MOVE_STEP;
+        }));
+        drawAll();
+      });
+    });
+
+    $('scale').addEventListener('click', () => {
+      const factor = Number($('factor').value);
+      if (factor <= 0) return;
+      Object.values(sets).forEach((points) => {
+        const c = centre(points);
+        points.forEach((point) => {
+          point.x = c.x + (point.x - c.x) * factor;
+          point.y = c.y + (point.y - c.y) * factor;
+        });
+      });
+      drawAll();
+    });
+
+    $('reset').addEventListener('click', () => {
+      sets = Object.fromEntries(Object.entries(originals).map(([key, points]) => [key, copy(points)]));
+      drawAll();
+    });
+
+    addEventListener('resize', drawAll);
+    setup();
+  </script>
+</body>
+</html>
